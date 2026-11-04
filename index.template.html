@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tapcard · точки роста — где продавать NFC-карты</title>
+<meta name="description" content="Инструмент поиска точек для продажи NFC-карт: кафе, салоны, клиники, автосервисы и отели с высоким потенциалом отзывов.">
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="pulse"></span><b>tapcard</b><span class="brand-sep">/</span>точки роста</div>
+  <div class="topbar-note">Где NFC-карты для отзывов зайдут лучше всего</div>
+</header>
+
+<main class="layout">
+
+  <aside class="panel">
+    <div class="field">
+      <label for="city">Город</label>
+      <select id="city"></select>
+    </div>
+
+    <button id="geo" class="ghost" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="8"/></svg>
+      Моё местоположение
+    </button>
+
+    <div class="field">
+      <label for="radius">Радиус <b id="radiusVal">2 км</b></label>
+      <input type="range" id="radius" min="500" max="10000" step="500" value="2000">
+    </div>
+
+    <div class="field">
+      <div class="cats-head">
+        <label>Категории</label>
+        <button id="catsToggle" class="link" type="button">все / высокие</button>
+      </div>
+      <div class="cats" id="cats"></div>
+    </div>
+
+    <button id="find" class="primary" type="button">
+      Найти точки
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+
+    <div class="panel-foot">Данные: OpenStreetMap (Overpass API)</div>
+  </aside>
+
+  <section class="content">
+
+    <div class="stats" id="stats">
+      <div class="stat"><span id="statFound">—</span><small>точек найдено</small></div>
+      <div class="stat"><span id="statA">—</span><small>приоритет A</small></div>
+      <div class="stat"><span id="statZones">—</span><small>горячих зон</small></div>
+      <div class="stat"><span id="statRadius">—</span><small>радиус, км</small></div>
+    </div>
+
+    <div class="map-wrap">
+      <canvas id="map"></canvas>
+      <div class="map-hint">Колесо — зум, перетаскивание — сдвиг</div>
+      <div class="map-legend">
+        <span><i class="dot a"></i> A · 80+</span>
+        <span><i class="dot b"></i> B · 60–79</span>
+        <span><i class="dot c"></i> C · ниже 60</span>
+      </div>
+    </div>
+
+    <div class="zones-block">
+      <div class="block-head">
+        <h2>Горячие зоны</h2>
+        <span class="muted">квадраты 400 м — где точек больше всего</span>
+      </div>
+      <div class="zones" id="zones"><div class="empty">Запустите поиск, чтобы увидеть зоны</div></div>
+    </div>
+
+    <div class="list-block">
+      <div class="block-head">
+        <h2>Точки</h2>
+        <div class="list-tools">
+          <select id="minGrade" class="mini">
+            <option value="0">все</option>
+            <option value="60">только B и A</option>
+            <option value="80">только A</option>
+          </select>
+          <button id="export" class="ghost small" type="button">CSV</button>
+        </div>
+      </div>
+      <div id="list"><div class="empty">Выберите город и нажмите «Найти точки»</div></div>
+    </div>
+
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/*__JS__*/
+</script>
+</body>
+</html>
