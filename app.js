@@ -64,8 +64,10 @@ const RULES = [
 
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter'
 ];
 
 const CELL_M = 400;
@@ -559,6 +561,8 @@ function loadSettings() {
 
 /* ================= Overpass ================= */
 
+let preferred = null;
+
 function buildQuery() {
   const rules = RULES.filter(r => state.enabled.has(r.id));
   if (!rules.length) return null;
@@ -567,24 +571,42 @@ function buildQuery() {
   return `[out:json][timeout:90];\n(\n${body}\n);\nout center 5000;`;
 }
 
-async function overpass(query, timeoutMs = 55000) {
+async function overpass(query, timeoutMs = 55000, maxTries = 100) {
   let lastErr = null;
-  for (const url of ENDPOINTS) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(query),
-        signal: ctrl.signal
-      });
-      clearTimeout(timer);
-      if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
-      return await res.json();
-    } catch (e) {
-      clearTimeout(timer);
-      lastErr = e;
+  let tries = 0;
+  // рабочий сервер запоминаем и в следующий раз пробуем первым
+  const order = preferred && ENDPOINTS.includes(preferred)
+    ? [preferred, ...ENDPOINTS.filter(u => u !== preferred)]
+    : ENDPOINTS.slice();
+  for (const url of order) {
+    // 1) POST, 2) GET — часть зеркал/прокси принимает только один способ
+    for (const method of ['POST', 'GET']) {
+      if (tries++ >= maxTries) throw lastErr || new Error('Overpass недоступен');
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      const target = method === 'GET' ? url + '?data=' + encodeURIComponent(query) : url;
+      try {
+        const res = await fetch(target, method === 'POST'
+          ? {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: 'data=' + encodeURIComponent(query),
+              signal: ctrl.signal
+            }
+          : {
+              method: 'GET',
+              headers: { Accept: 'application/json' },
+              signal: ctrl.signal
+            });
+        clearTimeout(timer);
+        if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
+        const data = await res.json();
+        preferred = url;
+        return data;
+      } catch (e) {
+        clearTimeout(timer);
+        lastErr = e;
+      }
     }
   }
   throw lastErr || new Error('Overpass недоступен');
@@ -595,7 +617,7 @@ async function fetchRoads() {
   const r = Math.min(state.radius, 3500);
   const q = `[out:json][timeout:30];\nway["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|living_street|pedestrian|unclassified)$"](around:${r},${lat},${lon});\nout geom;`;
   try {
-    const data = await overpass(q, 25000);
+    const data = await overpass(q, 12000, 2);
     return (data.elements || [])
       .filter(w => w.geometry && w.geometry.length > 1)
       .map(w => ({
@@ -845,7 +867,7 @@ async function find() {
 
   try {
     const q = buildQuery();
-    const data = await overpass(q);
+    const data = await overpass(q, 35000, 4);
 
     const seen = new Set();
     const pois = [];
