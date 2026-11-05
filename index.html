@@ -393,11 +393,11 @@ const RULES = [
 ];
 
 const ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-  'https://overpass.osm.ch/api/interpreter'
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 const CELL_M = 400;
@@ -893,12 +893,39 @@ function loadSettings() {
 
 let preferred = null;
 
-function buildQuery() {
+const BATCH = 4;          // категорий в одном запросе
+const CONCURRENCY = 2;    // сколько запросов параллельно
+
+function loadPreferred() {
+  try { preferred = localStorage.getItem('tapcard-spots-endpoint') || null; } catch (e) { /* ignore */ }
+}
+
+function buildQueries() {
   const rules = RULES.filter(r => state.enabled.has(r.id));
-  if (!rules.length) return null;
+  if (!rules.length) return [];
   const { lat, lon } = state.center;
-  const body = rules.map(r => `  nwr${r.q}(around:${state.radius},${lat},${lon});`).join('\n');
-  return `[out:json][timeout:90];\n(\n${body}\n);\nout center 5000;`;
+  const queries = [];
+  for (let i = 0; i < rules.length; i += BATCH) {
+    const body = rules.slice(i, i + BATCH)
+      .map(r => `  nwr${r.q}(around:${state.radius},${lat},${lon});`)
+      .join('\n');
+    queries.push(`[out:json][timeout:60];\n(\n${body}\n);\nout center 5000;`);
+  }
+  return queries;
+}
+
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) break;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 async function overpass(query, timeoutMs = 55000, maxTries = 100) {
@@ -932,6 +959,7 @@ async function overpass(query, timeoutMs = 55000, maxTries = 100) {
         if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
         const data = await res.json();
         preferred = url;
+        try { localStorage.setItem('tapcard-spots-endpoint', url); } catch (e) { /* ignore */ }
         return data;
       } catch (e) {
         clearTimeout(timer);
@@ -1193,28 +1221,42 @@ async function find() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Ищем точки…';
 
-  const roadsPromise = fetchRoads();
-
   try {
-    const q = buildQuery();
-    const data = await overpass(q, 35000, 4);
+    const queries = buildQueries();
+    if (!queries.length) throw new Error('нет категорий');
+
+    let done = 0;
+    const results = await mapLimit(queries, CONCURRENCY, async (q) => {
+      btn.innerHTML = `<span class="spinner"></span> Ищем точки… ${done}/${queries.length}`;
+      try {
+        const data = await overpass(q, 25000, 3);
+        return data.elements || [];
+      } catch (e) {
+        return null;
+      } finally {
+        done++;
+      }
+    });
+
+    const failed = results.filter(r => r === null).length;
+    const elements = [];
+    results.forEach(r => { if (r) elements.push(...r); });
+
+    if (!elements.length) throw new Error('нет данных');
 
     const seen = new Set();
     const pois = [];
-    (data.elements || []).forEach(el => {
+    elements.forEach(el => {
       const p = normalize(el);
       if (!p || seen.has(p.id)) return;
       seen.add(p.id);
       pois.push(p);
     });
 
-    const roads = await roadsPromise;
-    state.roads = roads;
-
     if (!pois.length) {
       state.pois = []; state.zones = [];
       renderStats(); renderZones(); renderList();
-      if (map) map.setData({ pois: [], zones: [], roads, radius: state.radius });
+      if (map) map.setData({ pois: [], zones: [], roads: [], radius: state.radius });
       toast('Точек не найдено — увеличьте радиус');
       return;
     }
@@ -1229,11 +1271,20 @@ async function find() {
     renderList();
 
     if (map) {
-      map.setData({ pois, zones: state.zones, roads, radius: state.radius });
+      map.setData({ pois, zones: state.zones, roads: [], radius: state.radius });
       map.fit(pois);
     }
 
-    toast(`Готово: ${pois.length} точек, ${state.zones.length} зон`);
+    toast(failed
+      ? `Готово: ${pois.length} точек (часть категорий не загрузилась)`
+      : `Готово: ${pois.length} точек, ${state.zones.length} зон`);
+
+    // дороги — косметика, догружаем в фоне
+    fetchRoads().then(roads => {
+      state.roads = roads;
+      if (map) map.setData({ roads });
+    });
+
     saveSettings();
   } catch (e) {
     console.error(e);
@@ -1326,6 +1377,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fillCities();
   renderCats();
   loadSettings();
+  loadPreferred();
   updateRadiusUI();
   bind();
 
