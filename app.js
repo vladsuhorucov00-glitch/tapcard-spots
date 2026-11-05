@@ -601,24 +601,41 @@ async function diagnose() {
 }
 
 const BATCH = 4;          // категорий в одном запросе
-const CONCURRENCY = 2;    // сколько запросов параллельно
+const CONCURRENCY = 1;    // запросы последовательно, чтобы не злить зеркала
 
 function loadPreferred() {
   try { preferred = localStorage.getItem('tapcard-spots-endpoint') || null; } catch (e) { /* ignore */ }
+}
+
+function bboxOf(lat, lon, r) {
+  const dLat = r / 111320;
+  const dLon = r / (111320 * Math.cos(lat * Math.PI / 180));
+  return [lat - dLat, lon - dLon, lat + dLat, lon + dLon]
+    .map(v => v.toFixed(5)).join(',');
 }
 
 function buildQueries() {
   const rules = RULES.filter(r => state.enabled.has(r.id));
   if (!rules.length) return [];
   const { lat, lon } = state.center;
+  const bbox = bboxOf(lat, lon, state.radius);
   const queries = [];
   for (let i = 0; i < rules.length; i += BATCH) {
     const body = rules.slice(i, i + BATCH)
-      .map(r => `  nwr${r.q}(around:${state.radius},${lat},${lon});`)
+      .map(r => `  nwr${r.q}(${bbox});`)
       .join('\n');
-    queries.push(`[out:json][timeout:60];\n(\n${body}\n);\nout center 5000;`);
+    queries.push(`[out:json][timeout:45];\n(\n${body}\n);\nout center 5000;`);
   }
   return queries;
+}
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 async function mapLimit(items, limit, fn) {
@@ -635,59 +652,68 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-async function overpass(query, timeoutMs = 55000, maxTries = 100) {
-  let lastErr = null;
-  let tries = 0;
-  // рабочий сервер запоминаем и в следующий раз пробуем первым
-  const order = preferred && ENDPOINTS.includes(preferred)
-    ? [preferred, ...ENDPOINTS.filter(u => u !== preferred)]
-    : ENDPOINTS.slice();
-  for (const url of order) {
-    // 1) POST, 2) GET — часть зеркал/прокси принимает только один способ
-    for (const method of ['POST', 'GET']) {
-      if (tries++ >= maxTries) throw lastErr || new Error('Overpass недоступен');
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      const target = method === 'GET' ? url + '?data=' + encodeURIComponent(query) : url;
-      try {
-        const res = await fetch(target, method === 'POST'
-          ? {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              body: 'data=' + encodeURIComponent(query),
-              signal: ctrl.signal
-            }
-          : {
-              method: 'GET',
-              headers: { Accept: 'application/json' },
-              signal: ctrl.signal
-            });
-        clearTimeout(timer);
-        if (!res.ok) {
-          lastErr = new Error('HTTP ' + res.status);
-          lastAttempts.push(hostOf(url) + ' ' + method + ' → HTTP ' + res.status);
-          continue;
-        }
-        const data = await res.json();
-        preferred = url;
-        try { localStorage.setItem('tapcard-spots-endpoint', url); } catch (e) { /* ignore */ }
-        return data;
-      } catch (e) {
-        clearTimeout(timer);
-        lastErr = e;
-        lastAttempts.push(hostOf(url) + ' ' + method + ' → ' + (e.name === 'AbortError' ? 'таймаут' : 'сеть'));
-      }
-    }
+let epOffset = 0;
+
+/* Пробуем несколько зеркал одновременно — кто ответит первым, того и данные.
+   Медленные/битые зеркала не тормозят поиск. */
+async function overpass(query, timeoutMs = 30000) {
+  const n = ENDPOINTS.length;
+  const rotated = ENDPOINTS.slice(epOffset % n).concat(ENDPOINTS.slice(0, epOffset % n));
+  epOffset++;
+  if (preferred) {
+    const i = rotated.indexOf(preferred);
+    if (i > 0) rotated.unshift(rotated.splice(i, 1)[0]);
   }
-  throw lastErr || new Error('Overpass недоступен');
+  const hosts = rotated.slice(0, 3);
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    return await new Promise((resolve, reject) => {
+      let pending = hosts.length;
+      let lastErr = null;
+      let done = false;
+
+      hosts.forEach(ep => {
+        fetch(ep + '?data=' + encodeURIComponent(query), {
+          signal: ctrl.signal,
+          headers: { Accept: 'application/json' }
+        })
+          .then(res => {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(data => {
+            if (done) return;
+            done = true;
+            preferred = ep;
+            try { localStorage.setItem('tapcard-spots-endpoint', ep); } catch (e) { /* ignore */ }
+            resolve(data);
+          })
+          .catch(e => {
+            if (!done) {
+              const reason = e.name === 'AbortError' ? 'таймаут' : (e.message || 'сеть');
+              lastAttempts.push(hostOf(ep) + ' → ' + reason);
+            }
+            lastErr = e;
+            if (--pending === 0 && !done) reject(lastErr);
+          });
+      });
+    });
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort();
+  }
 }
 
 async function fetchRoads() {
   const { lat, lon } = state.center;
-  const r = Math.min(state.radius, 3500);
-  const q = `[out:json][timeout:30];\nway["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|living_street|pedestrian|unclassified)$"](around:${r},${lat},${lon});\nout geom;`;
+  const r = Math.min(state.radius, 2500);
+  const bbox = bboxOf(lat, lon, r);
+  const q = `[out:json][timeout:30];\nway["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|living_street|pedestrian|unclassified)$"](${bbox});\nout geom;`;
   try {
-    const data = await overpass(q, 12000, 2);
+    const data = await overpass(q, 20000);
     return (data.elements || [])
       .filter(w => w.geometry && w.geometry.length > 1)
       .map(w => ({
@@ -942,15 +968,18 @@ async function find() {
 
     let done = 0;
     const results = await mapLimit(queries, CONCURRENCY, async (q) => {
-      btn.innerHTML = `<span class="spinner"></span> Ищем точки… ${done}/${queries.length}`;
-      try {
-        const data = await overpass(q, 25000, 3);
-        return data.elements || [];
-      } catch (e) {
-        return null;
-      } finally {
-        done++;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        btn.innerHTML = `<span class="spinner"></span> Ищем точки… ${done}/${queries.length}`;
+        try {
+          const data = await overpass(q, 30000);
+          done++;
+          return data.elements || [];
+        } catch (e) {
+          if (attempt === 0) await new Promise(r => setTimeout(r, 2500));
+        }
       }
+      done++;
+      return null;
     });
 
     const failed = results.filter(r => r === null).length;
@@ -964,6 +993,7 @@ async function find() {
     elements.forEach(el => {
       const p = normalize(el);
       if (!p || seen.has(p.id)) return;
+      if (haversine(state.center.lat, state.center.lon, p.lat, p.lon) > state.radius) return;
       seen.add(p.id);
       pois.push(p);
     });
