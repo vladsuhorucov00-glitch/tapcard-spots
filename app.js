@@ -562,6 +562,43 @@ function loadSettings() {
 /* ================= Overpass ================= */
 
 let preferred = null;
+let lastAttempts = [];
+
+function hostOf(u) {
+  try { return new URL(u).host; } catch (e) { return u; }
+}
+
+async function diagnose() {
+  const box = $('#diag');
+  box.hidden = false;
+  box.textContent = 'Проверяем серверы…';
+  const { lat, lon } = state.center;
+  const q = `[out:json][timeout:15];nwr["amenity"="cafe"](around:500,${lat},${lon});out center 5;`;
+  const lines = [];
+  for (const url of ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url + '?data=' + encodeURIComponent(q), {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: ctrl.signal
+      });
+      const txt = await res.text();
+      let n = null;
+      try { n = JSON.parse(txt).elements.length; } catch (e) { /* not json */ }
+      lines.push(hostOf(url) + ': HTTP ' + res.status +
+        (n === null ? ', не JSON' : ', точек ' + n) +
+        ', ' + Math.round(performance.now() - t0) + ' мс');
+    } catch (e) {
+      lines.push(hostOf(url) + ': ' + (e.name === 'AbortError' ? 'таймаут' : 'ошибка сети'));
+    } finally {
+      clearTimeout(timer);
+    }
+    box.textContent = lines.join('\n');
+  }
+}
 
 const BATCH = 4;          // категорий в одном запросе
 const CONCURRENCY = 2;    // сколько запросов параллельно
@@ -626,7 +663,11 @@ async function overpass(query, timeoutMs = 55000, maxTries = 100) {
               signal: ctrl.signal
             });
         clearTimeout(timer);
-        if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
+        if (!res.ok) {
+          lastErr = new Error('HTTP ' + res.status);
+          lastAttempts.push(hostOf(url) + ' ' + method + ' → HTTP ' + res.status);
+          continue;
+        }
         const data = await res.json();
         preferred = url;
         try { localStorage.setItem('tapcard-spots-endpoint', url); } catch (e) { /* ignore */ }
@@ -634,6 +675,7 @@ async function overpass(query, timeoutMs = 55000, maxTries = 100) {
       } catch (e) {
         clearTimeout(timer);
         lastErr = e;
+        lastAttempts.push(hostOf(url) + ' ' + method + ' → ' + (e.name === 'AbortError' ? 'таймаут' : 'сеть'));
       }
     }
   }
@@ -885,6 +927,9 @@ async function find() {
 
   state.loading = true;
   state.zoneFilter = null;
+  lastAttempts = [];
+  const diagBox = $('#diag');
+  diagBox.hidden = true;
 
   const btn = $('#find');
   const original = btn.innerHTML;
@@ -927,6 +972,8 @@ async function find() {
       state.pois = []; state.zones = [];
       renderStats(); renderZones(); renderList();
       if (map) map.setData({ pois: [], zones: [], roads: [], radius: state.radius });
+      diagBox.hidden = false;
+      diagBox.textContent = 'Серверы ответили, но в радиусе нет объектов с выбранными категориями.\nУвеличь радиус или включи больше категорий.';
       toast('Точек не найдено — увеличьте радиус');
       return;
     }
@@ -958,6 +1005,10 @@ async function find() {
     saveSettings();
   } catch (e) {
     console.error(e);
+    diagBox.hidden = false;
+    diagBox.textContent =
+      (lastAttempts.length ? lastAttempts.slice(-8).join('\n') : 'Серверы не ответили') +
+      '\n\nНажми «Проверить связь с OSM» и пришли этот текст.';
     toast('Не удалось получить данные OSM. Проверьте интернет и попробуйте ещё раз.', 4200);
   } finally {
     state.loading = false;
@@ -1010,6 +1061,7 @@ function bind() {
   $('#radius').addEventListener('change', saveSettings);
 
   $('#find').addEventListener('click', find);
+  $('#diagBtn').addEventListener('click', diagnose);
 
   $('#minGrade').addEventListener('change', e => {
     state.minGrade = Number(e.target.value);

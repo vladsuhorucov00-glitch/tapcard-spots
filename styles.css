@@ -115,6 +115,15 @@ button{font:inherit;cursor:pointer}
 .ghost svg{width:15px;height:15px}
 .ghost.small{padding:6px 12px;font-size:.78rem;border-radius:9px}
 .link{background:none;border:0;color:var(--accent);font-size:.72rem;padding:0}
+.diag-link{text-align:center;font-size:.74rem;color:var(--muted)}
+.diag-link:hover{color:var(--accent)}
+.diag{
+  white-space:pre-wrap;word-break:break-word;
+  font:11px/1.45 ui-monospace,Consolas,"Courier New",monospace;
+  color:var(--muted);background:rgba(0,0,0,.28);
+  border:1px solid var(--line-soft);border-radius:10px;
+  padding:8px 10px;max-height:170px;overflow:auto;
+}
 .panel-foot{font-size:.7rem;color:var(--muted-2);text-align:center}
 
 /* ---------- stats ---------- */
