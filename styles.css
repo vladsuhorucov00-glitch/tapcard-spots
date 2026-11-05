@@ -125,6 +125,11 @@ button{font:inherit;cursor:pointer}
   padding:8px 10px;max-height:170px;overflow:auto;
 }
 .panel-foot{font-size:.7rem;color:var(--muted-2);text-align:center}
+.src{
+  font-size:.7rem;line-height:1.4;text-align:center;
+  color:var(--muted);border:1px dashed var(--line-soft);
+  border-radius:8px;padding:6px 8px;background:rgba(55,240,160,.05);
+}
 
 /* ---------- stats ---------- */
 .content{display:flex;flex-direction:column;gap:18px;min-width:0}

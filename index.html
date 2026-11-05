@@ -133,6 +133,11 @@ button{font:inherit;cursor:pointer}
   padding:8px 10px;max-height:170px;overflow:auto;
 }
 .panel-foot{font-size:.7rem;color:var(--muted-2);text-align:center}
+.src{
+  font-size:.7rem;line-height:1.4;text-align:center;
+  color:var(--muted);border:1px dashed var(--line-soft);
+  border-radius:8px;padding:6px 8px;background:rgba(55,240,160,.05);
+}
 
 /* ---------- stats ---------- */
 .content{display:flex;flex-direction:column;gap:18px;min-width:0}
@@ -288,8 +293,9 @@ button{font:inherit;cursor:pointer}
 
     <button id="diagBtn" class="link diag-link" type="button">Проверить связь с OSM</button>
     <div class="diag" id="diag" hidden></div>
+    <div class="src" id="src" hidden></div>
 
-    <div class="panel-foot">Данные: OpenStreetMap (Overpass API)</div>
+    <div class="panel-foot">Данные: OpenStreetMap · сохранённый срез или Overpass</div>
   </aside>
 
   <section class="content">
@@ -349,6 +355,7 @@ button{font:inherit;cursor:pointer}
 /* ================= данные ================= */
 
 const CITIES = [
+  { name: 'Белгород', lat: 50.5977, lon: 36.5859 },
   { name: 'Москва', lat: 55.7558, lon: 37.6173 },
   { name: 'Санкт-Петербург', lat: 59.9386, lon: 30.3141 },
   { name: 'Новосибирск', lat: 55.0084, lon: 82.9357 },
@@ -404,6 +411,50 @@ const RULES = [
   { id: 'supermarket', label: 'Супермаркеты',               w: 3,  q: '["shop"~"^(supermarket|convenience)$"]',                    match: t => ['supermarket', 'convenience'].includes(t.shop) }
 ];
 
+const RULES_BY_ID = {};
+RULES.forEach(r => { RULES_BY_ID[r.id] = r; });
+
+/* Сохранённые срезы OSM (data/<slug>.js).
+   Города без среза ищутся онлайн через Overpass. */
+const SNAPSHOT_SLUGS = {
+  'Белгород': 'belgorod',
+  'Москва': 'moscow'
+};
+
+const SNAPSHOT_VERSION = '2';
+const snapshotCache = new Map();
+
+function loadSnapshot(cityName) {
+  const slug = SNAPSHOT_SLUGS[cityName];
+  if (!slug) return Promise.resolve(null);
+  if (snapshotCache.has(cityName)) return Promise.resolve(snapshotCache.get(cityName));
+  return new Promise(resolve => {
+    const s = document.createElement('script');
+    s.src = `data/${slug}.js?v=${SNAPSHOT_VERSION}`;
+    s.async = true;
+    s.onload = () => {
+      const data = (window.TAPCARD_CITY || {})[cityName] || null;
+      snapshotCache.set(cityName, data);
+      resolve(data);
+    };
+    s.onerror = () => {
+      snapshotCache.set(cityName, null);
+      resolve(null);
+    };
+    document.head.appendChild(s);
+  });
+}
+
+function preloadSnapshotFor(name) {
+  const box = $('#src');
+  loadSnapshot(name).then(data => {
+    if (!box || state.source) return;
+    if (!data) { box.hidden = true; box.textContent = ''; return; }
+    box.hidden = false;
+    box.textContent = `Есть сохранённые данные OSM от ${data.updated} — поиск работает без Overpass`;
+  });
+}
+
 const ENDPOINTS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.osm.ch/api/interpreter',
@@ -428,7 +479,8 @@ const state = {
   zoneFilter: null,
   minGrade: 0,
   loading: false,
-  roads: []
+  roads: [],
+  source: null
 };
 
 /* ================= утилиты ================= */
@@ -840,7 +892,7 @@ function fillCities() {
   CITIES.forEach((c, i) => {
     const o = document.createElement('option');
     o.value = String(i);
-    o.textContent = c.name;
+    o.textContent = c.name + (SNAPSHOT_SLUGS[c.name] ? ' · без интернета' : '');
     sel.appendChild(o);
   });
   const geo = document.createElement('option');
@@ -1289,6 +1341,74 @@ function renderList() {
 
 /* ================= поиск ================= */
 
+/* Сколько метров вокруг текущей точки покрывает сохранённый срез.
+   Срез — круг радиуса data.radius вокруг центра города. */
+function snapshotCover(data) {
+  if (!data || !data.center) return 0;
+  const d = haversine(state.center.lat, state.center.lon, data.center[0], data.center[1]);
+  return Math.max(0, data.radius - d);
+}
+
+function poisFromSnapshot(data, cover) {
+  const limit = Math.min(state.radius, cover);
+  const out = [];
+  const rows = data.pois || [];
+  const enabled = state.enabled;
+  for (const row of rows) {
+    const rule = RULES_BY_ID[data.rules[row[0]]];
+    if (!rule || !enabled.has(rule.id)) continue;
+    const lat = row[2], lon = row[3];
+    if (haversine(state.center.lat, state.center.lon, lat, lon) > limit) continue;
+    out.push({
+      id: `snap/${lat}:${lon}/${row[1]}`,
+      name: row[1],
+      cat: rule.label,
+      w: rule.w,
+      lat, lon,
+      address: row[4] || '—',
+      phone: row[5] || '',
+      website: row[6] || '',
+      hours: row[7] || '',
+      brand: row[8] ? 'сеть' : '',
+      osm: `https://www.openstreetmap.org/#map=19/${lat}/${lon}`,
+      score: 0,
+      reasons: [],
+      zone: ''
+    });
+  }
+  return out;
+}
+
+function describeSource() {
+  const box = $('#src');
+  if (!box) return;
+  const s = state.source;
+  if (!s) { box.hidden = true; box.textContent = ''; return; }
+  box.hidden = false;
+  if (s.kind === 'snapshot') {
+    box.textContent = `Сохранённые данные OSM · срез ${s.updated} · покрытие ${(s.cover / 1000).toFixed(1)} км от центра города`;
+  } else {
+    box.textContent = 'Данные OpenStreetMap, получены онлайн только что';
+  }
+}
+
+function showResults(pois, source, note) {
+  scoreAll(pois);
+  pois.sort((a, b) => b.score - a.score);
+  state.pois = pois;
+  state.zones = buildZones(pois);
+  state.source = source;
+  renderStats();
+  renderZones();
+  renderList();
+  describeSource();
+  if (map) {
+    map.setData({ pois, zones: state.zones, roads: state.roads, radius: state.radius });
+    map.fit(pois);
+  }
+  if (note) toast(note, 5000);
+}
+
 async function find() {
   if (state.loading) return;
   if (!state.enabled.size) { toast('Включите хотя бы одну категорию'); return; }
@@ -1305,6 +1425,29 @@ async function find() {
   btn.innerHTML = '<span class="spinner"></span> Ищем точки…';
 
   try {
+    // 1) Сохранённый срез OSM — работает даже там, где Overpass недоступен
+    const snap = await loadSnapshot(state.city.name);
+    const cover = snapshotCover(snap);
+
+    if (snap && cover >= 300) {
+      const pois = poisFromSnapshot(snap, cover);
+      if (!pois.length) {
+        state.pois = []; state.zones = []; state.source = { kind: 'snapshot', updated: snap.updated, cover };
+        renderStats(); renderZones(); renderList(); describeSource();
+        if (map) map.setData({ pois: [], zones: [], roads: [], radius: state.radius });
+        diagBox.hidden = false;
+        diagBox.textContent =
+          `В сохранённом срезе (${(cover / 1000).toFixed(1)} км вокруг центра) нет точек по выбранным категориям.\n` +
+          'Включите больше категорий или выберите другой город.';
+        toast('Точек не найдено — включите больше категорий');
+        return;
+      }
+      showResults(pois, { kind: 'snapshot', updated: snap.updated, cover },
+        `Готово: ${pois.length} точек (срез OSM от ${snap.updated}, данные в радиусе ${(cover / 1000).toFixed(1)} км)`);
+      return;
+    }
+
+    // 2) Онлайн-запрос к Overpass
     const queries = buildQueries();
     if (!queries.length) throw new Error('нет категорий');
 
@@ -1328,7 +1471,10 @@ async function find() {
     const elements = [];
     results.forEach(r => { if (r) elements.push(...r); });
 
-    if (!elements.length) throw new Error('нет данных');
+    if (!elements.length) {
+      if (snap) throw new Error('срез не покрывает точку');
+      throw new Error('нет данных');
+    }
 
     const seen = new Set();
     const pois = [];
@@ -1341,8 +1487,8 @@ async function find() {
     });
 
     if (!pois.length) {
-      state.pois = []; state.zones = [];
-      renderStats(); renderZones(); renderList();
+      state.pois = []; state.zones = []; state.source = { kind: 'live' };
+      renderStats(); renderZones(); renderList(); describeSource();
       if (map) map.setData({ pois: [], zones: [], roads: [], radius: state.radius });
       diagBox.hidden = false;
       diagBox.textContent = 'Серверы ответили, но в радиусе нет объектов с выбранными категориями.\nУвеличь радиус или включи больше категорий.';
@@ -1350,21 +1496,8 @@ async function find() {
       return;
     }
 
-    scoreAll(pois);
-    pois.sort((a, b) => b.score - a.score);
-    state.pois = pois;
-    state.zones = buildZones(pois);
-
-    renderStats();
-    renderZones();
-    renderList();
-
-    if (map) {
-      map.setData({ pois, zones: state.zones, roads: [], radius: state.radius });
-      map.fit(pois);
-    }
-
-    toast(failed
+    state.roads = [];
+    showResults(pois, { kind: 'live' }, failed
       ? `Готово: ${pois.length} точек (часть категорий не загрузилась)`
       : `Готово: ${pois.length} точек, ${state.zones.length} зон`);
 
@@ -1422,7 +1555,10 @@ function bind() {
     const i = Number(e.target.value);
     state.city = CITIES[i];
     state.center = { lat: state.city.lat, lon: state.city.lon };
+    state.pois = []; state.zones = []; state.source = null;
+    renderStats(); renderZones(); renderList(); describeSource();
     if (map) map.setCenter(state.center.lat, state.center.lon, 13);
+    preloadSnapshotFor(state.city.name);
     saveSettings();
   });
 
@@ -1455,9 +1591,23 @@ function bind() {
     navigator.geolocation.getCurrentPosition(
       pos => {
         state.center = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-        $('#city').value = 'geo';
+        // ближайший город — чтобы найти сохранённый срез рядом с точкой
+        let best = null, bestD = Infinity;
+        CITIES.forEach(c => {
+          const d = haversine(state.center.lat, state.center.lon, c.lat, c.lon);
+          if (d < bestD) { bestD = d; best = c; }
+        });
+        if (best && bestD <= 60000) {
+          state.city = best;
+          $('#city').value = String(CITIES.indexOf(best));
+          preloadSnapshotFor(best.name);
+        } else {
+          $('#city').value = 'geo';
+        }
+        state.source = null;
+        renderStats(); renderZones(); renderList(); describeSource();
         if (map) map.setCenter(state.center.lat, state.center.lon, 15);
-        toast('Локация определена');
+        toast(bestD <= 60000 ? `Локация определена · ${best.name}` : 'Локация определена');
       },
       () => toast('Не удалось определить локацию. Выберите город.'),
       { enableHighAccuracy: false, timeout: 10000 }
@@ -1486,6 +1636,7 @@ document.addEventListener('DOMContentLoaded', () => {
   map.setCenter(state.center.lat, state.center.lon, 13);
 
   renderStats();
+  preloadSnapshotFor(state.city.name);
 });
 
 </script>
