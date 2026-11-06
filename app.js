@@ -1181,8 +1181,53 @@ async function find() {
   }
 }
 
-/* ================= CSV ================= */
+/* ================= все точки на Яндекс Картах ================= */
 
+const YA_STYLE = { a: 'pm2gnm', b: 'pm2ylm', c: 'pm2grm' };
+const YA_MAX = 200;
+
+function visibleList() {
+  let list = state.pois;
+  if (state.zoneFilter) list = list.filter(p => p.zone === state.zoneFilter);
+  if (state.minGrade > 0) list = list.filter(p => p.score >= state.minGrade);
+  return list;
+}
+
+function openAllOnYandex() {
+  const list = visibleList();
+  if (!list.length) { toast('Сначала найдите точки'); return; }
+
+  const pts = list.slice(0, YA_MAX);
+  const pt = pts.map(p => `${p.lon.toFixed(5)},${p.lat.toFixed(5)},${YA_STYLE[grade(p.score)]}`).join('~');
+
+  let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+  pts.forEach(p => {
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+  });
+  const lat = (minLat + maxLat) / 2;
+  const lon = (minLon + maxLon) / 2;
+  const spanLat = maxLat - minLat, spanLon = maxLon - minLon;
+  const span = Math.max(spanLat, spanLon * Math.cos(lat * Math.PI / 180));
+  let z = 15;
+  if (span > 0.40) z = 10;
+  else if (span > 0.20) z = 11;
+  else if (span > 0.10) z = 12;
+  else if (span > 0.05) z = 13;
+  else if (span > 0.02) z = 14;
+
+  const url = `https://yandex.ru/maps/?ll=${lon.toFixed(5)},${lat.toFixed(5)}&z=${z}&pt=${pt}&l=map`;
+  window.open(url, '_blank', 'noopener');
+  if (list.length > YA_MAX) {
+    toast(`На карту отправлены ${YA_MAX} лучших точек из ${list.length}. Уточните фильтр, чтобы увидеть остальные.`, 5000);
+  } else {
+    toast(`Открываю ${pts.length} точек на Яндекс Картах`);
+  }
+}
+
+/* ================= CSV ================= */
 function exportCsv() {
   const list = state.pois;
   if (!list.length) { toast('Сначала найдите точки'); return; }
@@ -1236,6 +1281,7 @@ function bind() {
   });
 
   $('#export').addEventListener('click', exportCsv);
+  $('#toYandex').addEventListener('click', openAllOnYandex);
 
   $('#catsToggle').addEventListener('click', () => {
     const all = state.enabled.size === RULES.length;
