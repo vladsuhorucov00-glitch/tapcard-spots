@@ -208,6 +208,8 @@ button{font:inherit;cursor:pointer}
   padding:4px 9px;border-radius:8px;transition:.15s;
 }
 .poi .actions a:hover{background:rgba(55,240,160,.1)}
+.poi .actions a.route{background:rgba(55,240,160,.14);border-color:rgba(55,240,160,.45);font-weight:600}
+.poi .actions a.route:hover{background:rgba(55,240,160,.24)}
 .poi mark{background:rgba(55,240,160,.16);color:#C9F7E0;border-radius:4px;padding:0 4px;font-weight:700}
 
 /* ---------- misc ---------- */

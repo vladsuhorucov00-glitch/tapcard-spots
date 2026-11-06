@@ -977,14 +977,21 @@ function renderList() {
 
     const actions = document.createElement('div');
     actions.className = 'actions';
+
+    const route = document.createElement('a');
+    route.className = 'route';
+    route.href = `https://yandex.ru/maps/?rtext=~${p.lat},${p.lon}&rtt=auto`;
+    route.target = '_blank'; route.rel = 'noopener';
+    route.textContent = 'Маршрут';
+
     const y = document.createElement('a');
     y.href = `https://yandex.ru/maps/?text=${encodeURIComponent(p.name + ' ' + (p.address !== '—' ? p.address : ''))}`;
     y.target = '_blank'; y.rel = 'noopener';
-    y.textContent = 'Яндекс Карты';
+    y.textContent = 'Яндекс';
     const o = document.createElement('a');
     o.href = p.osm; o.target = '_blank'; o.rel = 'noopener';
     o.textContent = 'OSM';
-    actions.append(y, o);
+    actions.append(route, y, o);
 
     card.append(top, addr, meta, actions);
     box.appendChild(card);
